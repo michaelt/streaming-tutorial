@@ -3,13 +3,24 @@ This package pertains to the type
 
     Stream f m r
 
-In what follows, whatever fills the `f` position is called *the streamed functor*, or *the form of the steps* or simply: *the functor*. Whatever fills the `m` parameter is *the monad*, or *the monad of effects* or just: the *effect* or *action* type.  Finally whatever fills the `r` position is the *return* or *exit* type. 
+This expresses an indefinitely long succession of steps with a structure expressed by `f`, arising from actions in the monad `m`. In what follows, whatever fills the `f` position is called *the streamed functor*, or *the form of the steps* or simply: *the functor*. Whatever fills the `m` parameter is *the monad*, or *the monad of effects* or just: the *effect* or *action* type.  Finally whatever fills the `r` position is the *return* or *exit* type. 
 
-Our focus in this tutorial is on a particular reading of the functor position:
+We might depict the possibilities for individual such 'streams' like this: 
+
+    ...
+    m f (m f (m f (m f (m r))))
+    m f (m f (m f (m r)))
+    m f (m f (m r))
+    m f (m r)
+    m r
+
+`Streaming.Prelude`, and this tutorial, are focussed on a particular reading of the functor position:
 
     Stream (Of a) m r
 
-This is the topic of `Streaming.Prelude`. This is the *stream of individual Haskell values derived from actions in some monad `m` and returning a value of type r*. The "streamed functor" here, `Of a`, is almost as minimal as can be - the left-strict pair:
+This is the *stream of individual Haskell values derived from actions in some monad `m` and returning a value of type r*. It is equivalent to `Producer a m r` in `pipes`, `ConduitM () o m r` in `conduit` and `Generator a r` in `io-streams`.
+
+The "streamed functor" here, `Of a`, is almost as minimal as can be - the left-strict pair:
 
     data Of a r = !a :> r
 
@@ -17,9 +28,70 @@ We only prefer this to the standard Haskell pair
 
     data (,) a b = (a,b) 
     
-because `ghc` has proven better able to optimize it in our use case.  
+because `ghc` has proven better able to optimize it in our use case. 
 
-In principle, `f` might be any functor and `m` any monad. But we are interested in a quite particular range of functors -- basically, things we can envisage making a left fold over -- and on readings of `m` as `IO`, or as as meeting some `MonadIO` constraint. `Stream f m r` preserves these properties, and can thus reasonably be put in either position. Inevitably we will also find constant use for types like 
+`Stream (Of a) m r` and the equivalent types we mentioned are essentially effectful variants of the Haskell type 
+
+    ([a],r)
+    
+Streams of this basic form might be depicted thus: 
+
+    ...
+    m (a :> m (a :> m (a :> m (a :> r))))
+    m (a :> m (a :> m (a :> m r)))
+    m (a :> m (a :> m r))
+    m (a :> m r)
+    m r
+
+When we run the outermost monadic action, we are either done (the last case), or we get a pair `a :> rest`, where `rest` is the rest of the stream.  If we read `m` as `Identity` and `r` as `()`, then it is of course isomorphic to `[a]` (but strict in the leaves).  The `Show` instance applies at this type:
+
+~~~
+>>> each [1,2,3] :: Stream (Of Int) Identity ()
+Step (1 :> Step (2 :> Step (3 :> Return ())))
+~~~
+
+The `Show` instance is derived, and thus exhibits the hidden constructors. Because `each` is a pure operation, we see no trace of any monadic action, just the functorial steps. We can perceive the more general case, in which functor steps are interleaved with monadic actions that may determine their content, we apply `S.mapM return`: 
+
+~~~
+>>> S.mapM return $ each [1,2,3] :: Stream (Of Int) Identity ()
+Effect (Identity (Step (1 :> Effect (Identity (Step (2 :> Effect (Identity (Step (3 :> Return ())))))))))
+~~~
+
+Here, all of the effects are predetermined, so we can again perceive the we just have a somewhat decorated variant of `1 : 2 : 3 : []`. The constructors are hidden in this library precisely in order to preserve the equivalence of the two streams above, i.e. so that things like `S.mapM return = id` hold. The second might be said to be the 'canonical' representative of quotient we operate with. If you do not import `Streaming.Internal`, then the `Show` instance for `Stream (Of a) Identity r` is the only way you can observe it - and even then, all you can do is observe it, you cannot act on it. It would be possible to dispense with this apparatus of hiding, as in `Control.Monad.Trans.FreeT`, but the type would no longer be practical; the ordinary workings of `ghc` would have no room to simplify and optimize complex embedded loops. 
+
+But, to return to our leading types, `Stream f m r` and its specialization `Stream (Of a) m r`: it is essential to the whole construction that we permit a return type, `r`. If we forbade it, and replaced the `Return ()` that we see in:
+
+~~~
+>>> each [1,2,3] :: Stream (Of Int) Identity ()
+Step (1 :> Step (2 :> Step (3 :> Return ())))
+~~~
+
+with say `Nil` (i.e. the `[]` of Haskell lists), we would have the familiar `ListT m a` type. This is a perfectly legitimate type, when 'done right', but it cannot support any but the most primitive list operations. *`Stream f m r` could be expressed in various ways, but something with its internal complexity is essential to the reconstitution of the API of the Haskell `Prelude` and `Data.List`.*
+
+For example, we want to be able to express the streaming division of a stream.  For example, we want to be able to break after the first two items streamed, whatever they might be, and return 'rest of the stream', proposing to handle it separately. That is, we want to be able to define `splitAt`:
+
+~~~
+>>> S.splitAt 2 $ each [1..4] :: Stream (Of Int) Identity (Stream (Of Int) Identity ())
+Step (1 :> Step (2 :> Return (Step (3 :> Step (4 :> Return ())))))
+~~~
+
+This is impossible in `io-streams`, `machines` and `list-t`; it is possible in `conduit`, but is not supported, since it cannot be made to fit with the rest of the framework. `list-t` at least sees the necessity of [some such operation](http://hackage.haskell.org/package/list-t-0.4.5.1/docs/ListT.html#v:splitAt), but must type it thus (specializing):
+
+~~~
+splitAt :: Monad m => Int -> ListT m a -> m ([a],ListT m a)
+~~~
+
+That is, in order to contemplate acting on the first n members in one way, and the rest in another way, I must break streaming and accumulate a Haskell list.
+
+
+And we want to stream our streams - for example by dividing a given stream into segments - and operate on the substreams separately. 
+
+~~~
+>>> chunksOf 2 $ each [1,2,3,4,5,6] :: Stream (Stream (Of Int) Identity) Identity ()
+Step (Step (1 :> Step (2 :> Return (Step (Step (3 :> Step (4 :> Return (Step (Step (5 :> Step (6 :> Return (Return ()))))))))))))
+~~~
+
+In principle, `f` might be any functor and `m` any monad. But we are interested in a quite particular range of functors - basically, things we can envisage making a left fold over - and on readings of `m` as `IO`, or as meeting some `MonadIO` constraint. *`Stream f m r` preserves these properties, and can thus reasonably be put in either position.* Inevitably we will also find constant use for types like 
 
     Stream (Stream (Of a) m) m r
     
@@ -43,8 +115,11 @@ Occasionally we will see others, like
 import qualified Control.Foldl as L -- cabal install foldl
 ~~~
 
-Introducing a stream
---------------------
+Introducing a stream, easy cases
+================================
+
+`yield`
+-------
 
 The simplest and most rudimentary way to construct a stream is with the `yield` statement:
 
@@ -57,7 +132,7 @@ True
 
 ~~~
 
-These can be sequenced with `>>` or do notation:
+`yield` statements can be sequenced with `>>`, or with `do` notation:
 
 ~~~
 
@@ -72,6 +147,10 @@ world
 ~~~
 
 `yield` statements are the basic building block of any hand-written definition `Stream (Of a) m r`, and will be discussed further below. 
+
+
+`each`
+------
 
 While `yield` makes a singleton stream, `each` streams any pure, `Foldable` container of Haskell values into a nominally effectful stream:
 
