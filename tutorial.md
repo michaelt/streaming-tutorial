@@ -1,6 +1,34 @@
 
+This package pertains to the type 
+
+    Stream f m r
+
+In what follows, whatever fills the `f` position is called *the streamed functor*, or *the form of the steps* or simply: *the functor*. Whatever fills the `m` parameter is *the monad*, or *the monad of effects* or just: the *effect* or *action* type.  Finally whatever fills the `r` position is the *return* or *exit* type. 
+
+Our focus in this tutorial is on a particular reading of the functor position:
+
+    Stream (Of a) m r
+
+This is the topic of `Streaming.Prelude`. This is the *stream of individual Haskell values derived from actions in some monad `m` and returning a value of type r*. The "streamed functor" here, `Of a`, is almost as minimal as can be - the left-strict pair:
+
+    data Of a r = !a :> r
+
+We only prefer this to the standard Haskell pair
+
+    data (,) a b = (a,b) 
     
-Because it massively overlaps with the `Prelude`, `Streaming.Prelude` must be imported qualified. The `Streaming` module, by contrast, is designed to be imported without qualification. Several important operations are put in the `Streaming.Prelude` because they overlap with the `Pipes` module and are in all cases semantically very close to their `Pipes` meaning. In the present tutorial, `Pipes` is not at issue; the examples will thus presuppose the following imports:
+because `ghc` has proven better able to optimize it in our use case.  
+
+In principle, `f` might be any functor and `m` any monad. But we are interested in a quite particular range of functors -- basically, things we can envisage making a left fold over -- and on readings of `m` as `IO`, or as as meeting some `MonadIO` constraint. `Stream f m r` preserves these properties, and can thus reasonably be put in either position. Inevitably we will also find constant use for types like 
+
+    Stream (Stream (Of a) m) m r
+    
+and 
+
+    Stream (Of a) (Stream (Of a) m) r
+
+
+Because it massively overlaps with the `Prelude`, `Streaming.Prelude` must be imported qualified. The `Streaming` module, by contrast, is designed to be imported without qualification. Several important operations - in particular `each`, `next`, `yield` - are put in the `Streaming.Prelude` because they overlap with the `Pipes` module and are in all cases semantically very close to their `Pipes` meaning. In the present tutorial, `Pipes` is not at issue; the examples will thus presuppose the following imports:
 
 
 ~~~
@@ -71,7 +99,12 @@ world<Enter>
 ~~~
 
 The simple textual IO operations, like `stdinLn`, `readFile` act line by line
-
+<label for="mn-demo" class="margin-toggle">&#8853;</label>
+<input type="checkbox" id="mn-demo" class="margin-toggle"/>
+<span class="marginnote">
+If you are not familiar with it, `runResourceT` here amounts basically `close_handles`; it makes it possible
+to define a semi-sensible `readFile` and `writeFile` without explicit use of handles. 
+</span>
 
 ~~~
 >>> 
@@ -81,9 +114,9 @@ The simple textual IO operations, like `stdinLn`, `readFile` act line by line
 "world"
 ~~~
 
-(If you are not familiar with it, `runResourceT` here amounts basically `close_any_handle_opened_in`; it makes it possible
-to define a semi-sensible `readFile` and `writeFile` without explicit use of handles. Note that these and similar functions in `Streaming.Prelude` are line-based, and hold regular
-Haskell `String`s.)
+
+Note that `readFile`, `stdinLn` and similar functions in `Streaming.Prelude` are line-based, and hold or act on regular Haskell `String`s.
+
 
 Eliminating streams
 -------------------
@@ -127,27 +160,10 @@ because above we were exiting streaming for good, and the streams we were foldin
 
 
 
-This package pertains to the type 
 
-    Stream f m r
 
-In principle, `f` might be any functor and `m` any monad. But we are interested in a quite particuler range of functors. and on readings of `m` as as meeting some `MonadIO` constraint, or else as `IO` itself.  
 
-In what follows, whatever fills the `f` position is called "the streamed functor" or "the form of the steps" or simply, "the functor". Whatever fills the `m` parameter is "the monad" or "the monad of effects" or the "effect" or "action" type.  Whatever fills the `r` position is the "return" or "exit" type.
-
-Our focus in this tutorial a particular reading of the functor position:
-
-    Stream (Of a) m r
-
-this is the topic of `Streaming.Prelude`. This is the *stream of individual Haskell values derived from actions in some monad `m` and returning a value of type r*. The "streamed functor" `Of a` is almost as minimal as can be - the left-strict pair:
-
-    data Of a r = !a :> r
-
-We only prefer this to the standard Haskell pair
-
-    data (,) a b = (a,b) 
-    
-because `ghc` has proven better able to optimize it in our use case.  The glue that holds together a typical Haskell pair, or our left-strict variant, is the glue that holds together the *successive phases* of a `Stream (Of a) m r`, linking each yielded element with the rest of the stream. That is, when we inspect a stream of the type 
+The glue that holds together a typical Haskell pair, or our left-strict variant, is the glue that holds together the *successive phases* of a `Stream (Of a) m r`, linking each yielded element with the rest of the stream. That is, when we inspect a stream of the type 
 
     Stream (Of a) m r
 
@@ -175,8 +191,8 @@ expresses these possibilities in terms of the standard base types `(,)` and `Eit
 Note that `Stream` has a show instance which will work when we specialize `m` to `Identity`: 
 
 ~~~
->>> each [1..10] :: Stream (Of Int) Identity ()
-Step (1 :> Step (2 :> Step (3 :> Step (4 :> Step (5 :> Step (6 :> Step (7 :> Step (8 :> Step (9 :> Step (10 :> Return ()))))))))))
+>>> each [1..4] :: Stream (Of Int) Identity ()
+Step (1 :> Step (2 :> Step (3 :> Step (4 :> Return ()))))
 ~~~
 
 This reveals the constructors which are hidden in the `Internal` module (here `Step` and `Return`)  but we can observe the similarity to the construction of a Haskell list.  The principal operational difference (apart from the fact that it has a final "return" value - here the vestigial `()`)  is that a `Stream (Of Int) Identity ()` is strict in its leaves. We can change that by moving from `Of Int` to `(,) Int`:
@@ -184,8 +200,8 @@ This reveals the constructors which are hidden in the `Internal` module (here `S
 ~~~
 >>> :t lazily 
 lazily :: Of a r -> (a, r)
->>> maps lazily (each [1..10]) :: Stream ((,) Int) Identity ()
-Step (1,Step (2,Step (3,Step (4,Step (5,Step (6,Step (7,Step (8,Step (9,Step (10,Return ()))))))))))
+>>> maps lazily (each [1..4]) :: Stream ((,) Int) Identity ()
+Step (1,Step (2,Step (3,Step (4,Return ()))))
 ~~~
 
 
