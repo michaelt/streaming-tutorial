@@ -16,3 +16,15 @@ cabal.sandbox.config
 *.hp
 *.html
 *.css
+*.aux 
+*.log 
+*.out 
+*.synctex.gz 
+*.bcf 
+*.bbl 
+*.blg 
+*.ent 
+*.nav 
+*.toc 
+*.vrb 
+*snm
