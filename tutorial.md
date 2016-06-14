@@ -18,7 +18,7 @@ A value of type `Stream f m r` will then be a succession of steps -- potentially
 
     Stream (Of a) m r
 
-This is the *stream of individual Haskell values derived from actions in some monad `m` and returning a value of type r*. It is equivalent to `Producer a m r` in `pipes`, `ConduitM () o m r` in `conduit` and `Generator a r` in `io-streams`.  
+This is the *stream of individual Haskell values derived from actions in some monad `m` and returning a value of type r*. It is equivalent to `Producer a m r` in `pipes`, `ConduitM () o m r` in `conduit` and `Generator a r` in `io-streams`; it is also (as will emerge) the equivalent of `FreeT ((,) a) m r` in the sense of the `free` library.
 
 `Stream (Of a)` is a monad transformer, and, where `m` is a monad, `Stream (Of a) m` is of course always a functor and a monad. *The fundamental action in this monad is expressed by the `yield` statement, discussed below.* 
 
@@ -45,7 +45,22 @@ Streams of this basic form might be depicted thus:
     m (a :> m r)                          -- one step remains
     m r                                   -- done
 
-When we run the outermost monadic action, we are either done (the last case), or we get a pair `a :> rest`, where `rest` is the rest of the stream. Given a stream, we can do this manually with `next`, which is discussed below. It is identical in content with `Pipes.next`:
+When we run the outermost monadic action, we are either done (the last case), or we get a pair `a :> rest`, where `rest` is the rest of the stream. 
+
+To construct a stream of this form we can write 
+
+    do let a = "a"
+       -- four steps remain
+       yield a 
+        -- three steps remain
+       yield a
+       -- two steps remain
+       yield a
+       -- one step remains
+       yield a
+       return "Done!"
+
+Given a stream like this, we can manually the elements with `next`, which is discussed below. It is identical in content with `Pipes.next`:
 
 ~~~
 >>> :t next
@@ -54,30 +69,31 @@ next :: Monad m => Stream (Of a) m r -> m (Either r (a, Stream (Of a) m r))
 Pipes.next :: Monad m => Producer a m r -> m (Either r (a, Producer a m r))
 ~~~
 
-If we read `m` as `Identity` and `r` as `()`, then it is of course isomorphic to `[a]` (but strict in the leaves).  The `Show` instance applies at this type:
+If we read `m` as `Identity` and `r` as `()`, then it is of course isomorphic to `[a]` (but strict in the leaves).  The `Show` instance applies at this type; using out little stream above we see:
 
 ~~~
->>> each [1,2,3] :: Stream (Of Int) Identity ()
-Step (1 :> Step (2 :> Step (3 :> Return ())))
+>>> let stream = let a = "a" in do {yield  a; yield a; yield a; yield a; return "Done!"} :: Stream (Of String) Identity String
+>>> stream
+Step ("a" :> Step ("a" :> Step ("a" :> Step ("a" :> Return "Done!"))))
 ~~~
 
 The `Show` instance is derived, and thus exhibits the hidden constructors. Because `each` is a pure operation, we see no trace of any monadic action, just the functorial steps. We can perceive the more general case, in which functor steps are interleaved with monadic actions that may determine their content, we apply `S.mapM return`: 
 
 ~~~
->>> S.mapM return $ each [1,2,3] :: Stream (Of Int) Identity ()
-Effect (Identity (Step (1 :> Effect (Identity (Step (2 :> Effect (Identity (Step (3 :> Return ())))))))))
+>>> S.mapM return stream
+Effect (Identity (Step ("a" :> Effect (Identity (Step ("a" :> Effect (Identity (Step ("a" :> Effect (Identity (Step ("a" :> Return "Done!"))))))))))))
 ~~~
 
-Here, all of the effects are predetermined, so we can again perceive the we just have a somewhat decorated variant of `1 : 2 : 3 : []`. The constructors are hidden in this library precisely in order to preserve the equivalence of the two streams above, i.e. so that things like `S.mapM return = id` hold. The second might be said to be the 'canonical' representative of quotient we operate with. The closest we come to pattern matching on the constructors, is by application of `next`. If you do not import `Streaming.Internal`, then the `Show` instance for `Stream (Of a) Identity r` is the only way you can observe it - and even then, all you can do is literally observe it, you cannot act on it. It would be possible to dispense with this apparatus of hiding, as in `Control.Monad.Trans.FreeT`, but the type would no longer be practical; the ordinary workings of `ghc` would have no room to simplify and optimize complex embedded loops. 
+Here, of course, all of the effects are predetermined, so we can perceive again the we just have a somewhat decorated variant of `1 : 2 : 3 : []`. The constructors are hidden in this library precisely in order to preserve the equivalence of the two streams above, i.e. so that things like `S.mapM return = id` hold. The second might be said to be the 'canonical' representative of quotient we operate with. The closest we come to pattern matching on the constructors, then, is by application of `next`, which reveals only the correct quotient. If you do not import `Streaming.Internal`, then the `Show` instance for `Stream (Of a) Identity r` is the only way you can observe it - and even then, all you can do is literally observe it, you cannot act on it. It would be possible to dispense with this apparatus of hiding, as in `Control.Monad.Trans.FreeT`, but the type would no longer be practical; the ordinary workings of `ghc` would have much less room to simplify and optimize complex embedded loops. 
 
 But, to return to our leading types - `Stream f m r` and its specialization `Stream (Of a) m r` - it is essential to the whole construction that we permit a return type, `r`. Suppose we forbade it, and replaced the `Return ()` that we see in:
 
 ~~~
->>> each [1,2,3] :: Stream (Of Int) Identity ()
-Step (1 :> Step (2 :> Step (3 :> Return ())))
+>>> each [1,2,3,4] :: Stream (Of Int) Identity ()
+Step (1 :> Step (2 :> Step (3 :> Step (4 :> Return ()))))
 ~~~
 
-with say `Nil` (i.e. the `[]` of Haskell lists). The we would have the familiar `ListT m a` type. This is a perfectly legitimate type, when 'done right', but *it cannot support any but the most primitive list operations.* `Stream f m r` could be expressed in various ways, but something with its internal complexity is essential to the reconstitution of the API of the Haskell `Prelude` and `Data.List`.
+with a different constructor, say `Nil` (i.e. the empty `[]` of Haskell lists). Then we would have the familiar `ListT m a` type. This is a perfectly legitimate type, when 'done right', but *it cannot support any but the most primitive list operations* and is thus basically mis-named. Our `Stream (Of a) m r` and general `Stream f m r` types could be expressed in various ways, but something with their internal complexity is essential to the reconstitution of the API of the Haskell `Prelude` and `Data.List`.
 
 For example, we want to be able to express the streaming division of a stream.  For example, we want to be able to break after the first two items streamed, whatever they might be, and return 'rest of the stream', proposing to handle it separately. That is, we want to be able to define `splitAt`:
 
@@ -86,7 +102,7 @@ For example, we want to be able to express the streaming division of a stream.  
 Step (1 :> Step (2 :> Return (Step (3 :> Step (4 :> Return ())))))
 ~~~
 
-This is impossible in `io-streams`, `machines` and `list-t`; it is possible in `conduit`, but is not supported, since it cannot be made to fit with the rest of the framework. `list-t` at least sees the necessity of [some such operation](http://hackage.haskell.org/package/list-t-0.4.5.1/docs/ListT.html#v:splitAt), but must type it thus (specializing):
+This is impossible in `io-streams`, `machines` and `list-t`; it is possible in `conduit`, but is not much supported, since it cannot be made to fit with the rest of the framework. `list-t` at least sees the necessity of [some such operation](http://hackage.haskell.org/package/list-t-0.4.5.1/docs/ListT.html#v:splitAt), but must type it thus (specializing):
 
 ~~~
 splitAt :: Monad m => Int -> ListT m a -> m ([a],ListT m a)
@@ -117,7 +133,7 @@ Because it massively overlaps with the `Prelude`, `Streaming.Prelude` must be im
 ~~~
 import Streaming  
 import qualified Streaming.Prelude as S
-import Streaming.Prelude (each, next, yield)
+import Streaming.Prelude (each, next, yield) -- these operations are so common it is useful to have them in scope if Pipes is not.
 ~~~
 
 Occasionally we will see others, like
@@ -125,6 +141,7 @@ Occasionally we will see others, like
 ~~~
 import qualified Control.Foldl as L -- cabal install foldl
 ~~~
+
 
 Introducing a stream, easy cases
 ================================
