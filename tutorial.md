@@ -205,34 +205,46 @@ world<Enter>
 "world"
 ~~~
 
-The simple textual IO operations, like `stdinLn`, `readFile` act line by line
-<label for="mn-demo" class="margin-toggle">&#8853;</label>
-<input type="checkbox" id="mn-demo" class="margin-toggle"/>
-<span class="marginnote">
-If you are not familiar with it, `runResourceT` here amounts basically `close_handles`; it makes it possible
-to define a semi-sensible `readFile` and `writeFile` without explicit use of handles. 
-</span>
+The simple textual IO operations in `Streaming.Prelude`, like `stdinLn`, `readFile` act line by line
 
 ~~~
->>> 
-
+>>> runResourceT $ S.writeFile "hello.txt" $ S.replicateM 2 (liftIO  getLine)
+hello<Enter>
+world<Enter>
+Prelude Streaming S L
 >>> runResourceT $ S.print $ S.readFile "hello.txt"
 "hello"
 "world"
 ~~~
 
+For `readFile` and `writeFile` we use `ResourceT` in a simple way to secure the closing and opening of handles.  The user must make sure that nothing 'streaming' or lazily developed escapes the scope of `runResourceT`, for the simple reason that the resource the stream depends on is closed. Thus of course we see 
 
-Note that `readFile`, `stdinLn` and similar functions in `Streaming.Prelude` are line-based, and hold or act on regular Haskell `String`s.
+~~~
+>>> rest <- runResourceT $ S.print $ S.splitAt 1 $ S.readFile "hello.txt"
+"hello"
+>>> runResourceT $ S.print rest -- <- type checks fine
+*** Exception: hello.txt: hIsEOF: illegal operation (handle is closed)
+~~~
 
+What were we expecting? -- Whereas in the usual case there is nothing wrong with such a resumption of a divided stream:
+
+~~~
+>>> rest <- S.print $ S.splitAt 1 $ S.replicateM 2 (liftIO  getLine) -- print the first bit of input, once received
+hello<Enter>
+"hello" 
+>>> S.print rest                                                     -- print the rest of the input, once received.
+world
+"world"
+~~~
 
 Eliminating streams
--------------------
+===================
 
 These are ways of introducing, 'constructing' or 'unfolding' a stream; what are some 
 ways of eliminating them?  We have already been using `S.print`, which 
-just prints all the elements, and keeps the final return value of the stream. Similarly `S.stdoutLn` eliminates a stream of strings by writing them on separate lines. 
+just prints all the elements, and keeps the final return value of the stream. Similarly `S.stdoutLn` eliminates a stream of strings by writing them on separate lines. `S.writeFile` writes them to a file.
 
-The easiest way 'reduce' a stream is with standard folds like `S.sum`, `S.product`, `S.toList` and the like. `S.print` is a minimal such fold. 
+The easiest way 'reduce' a stream is with standard folds like `S.sum`, `S.product`, `S.toList` and the like. Simple sinks like `S.print` are minimal such folds over a stream. 
 
 ~~~
 >>> S.sum $ yield 1 >> yield 2
@@ -264,17 +276,14 @@ because above we were exiting streaming for good, and the streams we were foldin
 
 
 
-
-
-
-
-
+Inspecting streams
+==================
 
 The glue that holds together a typical Haskell pair, or our left-strict variant, is the glue that holds together the *successive phases* of a `Stream (Of a) m r`, linking each yielded element with the rest of the stream. That is, when we inspect a stream of the type 
 
     Stream (Of a) m r
 
-we enter the monad of effects, e.g. `IO`, and there we either immediately hit upon the return or exit value - something of type `r`. In which case we are done streaming.  But we may also hit upon something of the type `Of a (Stream (Of a) m r)`. In that case we are "still streaming." The pattern for this case, if we are dealing with it directly, looks like so
+we enter the monad of effects, e.g. `IO`, and there we may immediately hit upon the return value (or exit value) - something of type `r`. In which case we are done streaming.  But we may also hit upon something of the type `Of a (Stream (Of a) m r)`. In that case we are "still streaming." The pattern for this case, if we are dealing with it directly, looks like so
 
     a :> rest
 
@@ -284,7 +293,7 @@ The function `next`
 
     next :: Monad m => Stream (Of a) m r -> m (Either r (a, Stream (Of a) m r))
     
-expresses these possibilities in terms of the standard base types `(,)` and `Either`. So to elimate all of the elements of a stream in order to get the return value, we might write:
+expresses these possibilities in terms of the standard base types `(,)` and `Either`. Let us write a minimal recursive function with `next`. To elimate all of the elements of a stream in order to get the return value, we might write:
 
     forget :: Monad m => Stream (Of a) m r -> m r
     forget str = do
@@ -294,6 +303,8 @@ expresses these possibilities in terms of the standard base types `(,)` and `Eit
          Right (a, rest) -> forget rest
 
 (This is `Streaming.Prelude.effects`.) I will return to `next` in a moment. We are at present only interested in the construction of a `Stream (Of a) ...` 
+
+-- detritus 
 
 Note that `Stream` has a show instance which will work when we specialize `m` to `Identity`: 
 
